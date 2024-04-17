@@ -148,12 +148,11 @@ class DemodSignalMap(DemodSignal):
                 if self.recenter:
                     rot = recentering_to_quat_lonlat(*evaluate_recentering(self.recenter, ctime=ctime[len(ctime)//2], geom=(self.rhs.shape, self.rhs.wcs), site=unarr(obs.site)))
                 else: rot = None
-                # we handle cuts here through obs.flags
                 if split_labels == None:
                     flagnames = ['glitch_flags'] # None
                     # this is the case with no splits
                 else:
-                    flagnames = ['jumps_2pi', 'glitches', 'turnarounds', split_labels[n_split]]
+                    flagnames = ['glitch_flags', split_labels[n_split]]
                 rangesmatrix = get_flags(obs, flagnames)
                 threads='domdir'
                 pmap_local = coords.pmat.P.for_tod(obs, comps=self.comps, geom=self.rhs.geometry, rot=rot, threads=threads, weather=unarr(obs.weather), site=unarr(obs.site), cuts=rangesmatrix, hwp=False, qp_kwargs=qp_kwargs)
