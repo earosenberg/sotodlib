@@ -155,7 +155,7 @@ class DemodSignalMap(DemodSignal):
                     flagnames = ['glitch_flags', split_labels[n_split]]
                 rangesmatrix = get_flags(obs, flagnames)
                 threads='domdir'
-                pmap_local = coords.pmat.P.for_tod(obs, comps=self.comps, geom=self.rhs.geometry, rot=rot, threads=threads, weather=unarr(obs.weather), site=unarr(obs.site), cuts=rangesmatrix, hwp=False, qp_kwargs=qp_kwargs)
+                pmap_local = coords.pmat.P.for_tod(obs, comps=self.comps, geom=self.rhs.geometry, rot=rot, threads=threads, weather=unarr(obs.weather), site=unarr(obs.site), cuts=rangesmatrix, hwp=True, qp_kwargs=qp_kwargs)
             else:
                 pmap_local = pmap
 
@@ -246,10 +246,10 @@ class DemodSignalMapHealpix(DemodSignal):
                     # this is the case with no splits
                     flagnames = ['glitch_flags'] # None
                 else:
-                    flagnames = ['jumps_2pi', 'glitches', 'turnarounds', split_labels[n_split]]
+                    flagnames = ['glitch_flags', split_labels[n_split]]
                 rangesmatrix = get_flags(obs, flagnames)
                 threads = ["tiles", "simple"][self.hp_geom.nside_tile is None] # 'simple' is likely to perform very poorly but no other method implemented for untiled healpix
-                pmap_local = coords.pmat.P.for_tod(obs, comps=self.comps, geom=None, hp_geom=self.hp_geom, threads=threads, weather=unarr(obs.weather), site=unarr(obs.site), cuts=rangesmatrix, hwp=False, qp_kwargs=qp_kwargs)
+                pmap_local = coords.pmat.P.for_tod(obs, comps=self.comps, geom=None, hp_geom=self.hp_geom, threads=threads, weather=unarr(obs.weather), site=unarr(obs.site), cuts=rangesmatrix, hwp=True, qp_kwargs=qp_kwargs)
             else:
                 pmap_local = pmap
 
