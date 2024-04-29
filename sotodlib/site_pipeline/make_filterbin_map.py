@@ -11,10 +11,14 @@ from pixell import enmap, utils, fft, bunch, wcsutils, tilemap, colors, memory, 
 from scipy import ndimage, interpolate
 from scipy.optimize import curve_fit
 from scipy.stats import kurtosis, skew
+from types import SimpleNamespace
 #from tqdm import tqdm
 from . import util
 
 defaults = {"query": "1",
+            "area": None,
+            "nside": None,
+            "nside_tile": "auto",
             "odir": "./output",
             "preprocess_config":None,
             "comps": "TQU",
@@ -43,6 +47,7 @@ defaults = {"query": "1",
             "atomic_db": "atomic_maps.db",
             "fixed_time": None,
             "mindur": None,
+            "ext": "fits",
            }
 
 def get_parser(parser=None):
@@ -54,7 +59,10 @@ def get_parser(parser=None):
     parser.add_argument("--context", help='context file')
     parser.add_argument("--query", help='query, can be a file (list of obs_id) or selection string')
     parser.add_argument("--area", help='wcs geometry')
+    parser.add_argument("--nside", help='healpix nside')
+    parser.add_argmuent("--nside_tile", help='nside for healpix tiles; can be None, "auto", or int')
     parser.add_argument("--odir", help='output directory')
+    parser.add_argument("--ext", help='output file extension')
     parser.add_argument("--preprocess_config", type=str, help='file with the config file to run the preprocessing pipeline')
     parser.add_argument("--mode", type=str, )
     parser.add_argument("--comps",   type=str,)
@@ -707,8 +715,8 @@ def read_tods(context, obslist, inds=None, comm=mpi.COMM_WORLD, no_signal=False,
         obs_id, detset, band, obs_ind = obslist[ind]
         try:
             tod = context.get_obs(obs_id, dets={"wafer_slot":detset, "wafer.bandpass":band}, no_signal=no_signal)
-            tod = calibrate_obs_with_preprocessing(tod, dtype_tod=dtype_tod, site=site)
-            #tod = calibrate_obs_tomoki(tod, dtype_tod=dtype_tod, site=site)
+            #tod = calibrate_obs_with_preprocessing(tod, dtype_tod=dtype_tod, site=site)
+            tod = calibrate_obs_tomoki(tod, dtype_tod=dtype_tod, site=site)
             if only_hits==False:
                 ra_ref_start, ra_ref_stop = get_ra_ref(tod)
                 my_ra_ref.append((ra_ref_start/utils.degree, ra_ref_stop/utils.degree))
@@ -719,12 +727,9 @@ def read_tods(context, obslist, inds=None, comm=mpi.COMM_WORLD, no_signal=False,
         except RuntimeError: continue
     return my_tods, my_inds, my_ra_ref
 
-def write_hits_map(context, obslist, shape, wcs, t0=0, comm=mpi.COMM_WORLD, tag="", verbose=0, site='so_sat1'):
+def write_hits_map(context, obslist, shape=None, wcs=None, nside=None, nside_tile='auto', t0=0, comm=mpi.COMM_WORLD, tag="", verbose=0, site='so_sat1'):
     L = logging.getLogger(__name__)
     pre = "" if tag is None else tag + " "
-
-    hits = enmap.zeros(shape, wcs, dtype=np.float64)
-
     for oi in range(len(obslist)):
         obs_id, detset, band = obslist[oi][:3]
         name = "%s:%s:%s" % (obs_id, detset, band)
@@ -733,23 +738,38 @@ def write_hits_map(context, obslist, shape, wcs, t0=0, comm=mpi.COMM_WORLD, tag=
         obs = context.get_obs(obs_id, dets={"wafer_slot":detset, "wafer.bandpass":band}, no_signal=True)
         obs = calibrate_obs_new(obs, site=site)
         rot = None
-        pmap_local = coords.pmat.P.for_tod(obs, comps='T', geom=hits.geometry, rot=rot, threads="domdir", weather=mapmaking.unarr(obs.weather), site=mapmaking.unarr(obs.site), hwp=True)
-        obs_hits = pmap_local.to_weights(obs, comps='T', )
-        hits = hits.insert(obs_hits[0,0], op=np.ndarray.__iadd__)
+        if shape is not None:
+            hits = enmap.zeros(shape, wcs, dtype=np.float64)
+            pmap_local = coords.pmat.P.for_tod(obs, comps='T', geom=hits.geometry, rot=rot, threads="domdir", weather=mapmaking.unarr(obs.weather), site=mapmaking.unarr(obs.site), hwp=True)
+            obs_hits = pmap_local.to_weights(obs, comps='T', )
+            hits = hits.insert(obs_hits[0,0], op=np.ndarray.__iadd__)
+        else:
+            hp_geom = SimpleNamespace(nside=nside, nside_tile=nside_tile)
+            threads = ["tiles", "simple"][hp_geom.nside_tile is None]
+            pmap_local = coords.pmat.P.for_tod(obs, comps='T', geom=None, hp_geom=hp_geom, threads=threads, weather=mapmaking.unarr(obs.weather), site=mapmaking.unarr(obs.site), hwp=True)
+            obs_hits = pmap_local.to_weights(obs, comps='T', )
+            hits = mapmaking.untile_healpix(obs_hits)
     return bunch.Bunch(hits=hits)
 
-def make_depth1_map(context, obslist, shape, wcs, noise_model, comps="TQU", t0=0, dtype_tod=np.float32, dtype_map=np.float64, comm=mpi.COMM_WORLD, tag="", verbose=0, preprocess_config=None, split_labels=None, singlestream=False, det_in_out=False, det_left_right=False, det_upper_lower=False, site='so_sat1', recenter=None):
+def make_depth1_map(context, obslist, noise_model, shape=None, wcs=None, nside=None, nside_tile='auto', comps="TQU", t0=0, dtype_tod=np.float32, dtype_map=np.float64, comm=mpi.COMM_WORLD, tag="", verbose=0, preprocess_config=None, split_labels=None, singlestream=False, det_weights=None, det_in_out=False, det_left_right=False, det_upper_lower=False, site='so_sat1', recenter=None, ext='fits'):
     L = logging.getLogger(__name__)
     pre = "" if tag is None else tag + " "
     if comm.rank == 0: L.info(pre + "Initializing equation system")
     # Set up our mapmaking equation
     if split_labels==None:
         # this is the case where we did not request any splits at all
-        signal_map = mapmaking.DemodSignalMap(shape, wcs, comm, comps=comps, dtype=dtype_map, tiled=False, ofmt="", singlestream=singlestream, recenter=recenter )
+        Nsplits = 1
     else:
-        # this is the case where we asked for at least 2 splits (1 split set). We count how many split we'll make, we need to define the Nsplits maps inside the DemodSignalMap
         Nsplits = len(split_labels)
-        signal_map = mapmaking.DemodSignalMap(shape, wcs, comm, comps=comps, dtype=dtype_map, tiled=False, ofmt="", Nsplits=Nsplits, singlestream=singlestream, recenter=recenter)
+
+    if nside is not None and shape is None:
+        if recenter is not None:
+            raise NotImplementedError("recenter not supported for Healpix")
+        signal_map = mapmaking.DemodSignalMapHealpix(nside, nside_tile, comm, comps=comps, dtype=dtype_map, ofmt="", Nsplits=Nsplits, singlestream=singlestream, ext=ext)
+    elif nside is None and shape is not None:
+        signal_map = mapmaking.DemodSignalMap(shape, wcs, comm, comps=comps, dtype=dtype_map, tiled=False, ofmt="", Nsplits=Nsplits, singlestream=singlestream, recenter=recenter, ext=ext)
+    else:
+        raise ValueError("Exactly one of nside and shape should be None")
     signals    = [signal_map]
     mapmaker   = mapmaking.DemodMapmaker(signals, noise_model=noise_model, dtype=dtype_tod, verbose=verbose>0, singlestream=singlestream)
     if comm.rank == 0: L.info(pre + "Building RHS")
@@ -765,9 +785,9 @@ def make_depth1_map(context, obslist, shape, wcs, noise_model, comps="TQU", t0=0
         else:
             obs = preprocess_tod.load_preprocess_tod(obs_id, configs=preprocess_config, dets={'wafer_slot':detset, 'wafer.bandpass':band}, )
         correct_hwp(obs, bandpass=band)
-        #obs = calibrate_obs_tomoki(obs, dtype_tod=dtype_tod, det_in_out=det_in_out, det_left_right=det_left_right, det_upper_lower=det_upper_lower, site=site)
+        obs = calibrate_obs_tomoki(obs, dtype_tod=dtype_tod, det_in_out=det_in_out, det_left_right=det_left_right, det_upper_lower=det_upper_lower, site=site)
         if obs.dets.count <= 1: continue
-        obs = calibrate_obs_with_preprocessing(obs, dtype_tod=dtype_tod, det_in_out=det_in_out, det_left_right=det_left_right, det_upper_lower=det_upper_lower, site=site)
+        #obs = calibrate_obs_with_preprocessing(obs, dtype_tod=dtype_tod, det_in_out=det_in_out, det_left_right=det_left_right, det_upper_lower=det_upper_lower, site=site)
         if obs.dets.count == 0: continue
 
         # And add it to the mapmaker
@@ -874,8 +894,14 @@ def main(config_file=None, defaults=defaults, **args):
     comm_inter = comm.Split(comm.rank  % args['tasks_per_group'])
 
     verbose = args['verbose'] - args['quiet']
-    shape, wcs = enmap.read_map_geometry(args['area'])
-    wcs        = wcsutils.WCS(wcs.to_header())
+    area = args['area']
+    if area is not None:
+        shape, wcs = enmap.read_map_geometry(args['area'])
+        wcs        = wcsutils.WCS(wcs.to_header())
+    else:
+        shape, wcs = None, None
+    nside = args['nside']
+    nside_tile = args['nside_tile']
 
     noise_model = mapmaking.NmatWhite()
     ncomp      = len(args['comps'])
@@ -995,7 +1021,7 @@ def main(config_file=None, defaults=defaults, **args):
             #    with a single task, but that task might not be the first one, so just
             #    make it mpi-aware like the footprint stuff
             my_infos = [obs_infos[obslist[ind][3]] for ind in my_inds]
-            if recenter is None:
+            if recenter is None and shape is not None:
                 profile  = find_scan_profile(context, my_tods, my_infos, comm=comm_intra)
                 subshape, subwcs = find_footprint(context, my_tods, wcs, comm=comm_intra)
             else:
@@ -1014,7 +1040,7 @@ def main(config_file=None, defaults=defaults, **args):
         if not args['only_hits']:
             try:
                 # 5. make the maps
-                mapdata = make_depth1_map(context, [obslist[ind] for ind in my_inds], subshape, subwcs, noise_model, t0=t, comm=comm_good, tag=tag, preprocess_config=args['preprocess_config'], recenter=recenter, dtype_map=args['dtype_map'], dtype_tod=args['dtype_tod'], comps=args['comps'], verbose=args['verbose'], split_labels=split_labels, singlestream=args['singlestream'], det_in_out=args['det_in_out'], det_left_right=args['det_left_right'], det_upper_lower=args['det_upper_lower'], site=args['site'])
+                mapdata = make_depth1_map(context, [obslist[ind] for ind in my_inds], noise_model, subshape, subwcs, nside, nside_tile, t0=t, comm=comm_good, tag=tag, preprocess_config=args['preprocess_config'], recenter=recenter, dtype_map=args['dtype_map'], dtype_tod=args['dtype_tod'], comps=args['comps'], verbose=args['verbose'], split_labels=split_labels, singlestream=args['singlestream'], det_in_out=args['det_in_out'], det_left_right=args['det_left_right'], det_upper_lower=args['det_upper_lower'], site=args['site'], ext=args['ext'])
                 # 6. write them
                 write_depth1_map(prefix, mapdata, split_labels=split_labels, )
             except DataMissing as e:
@@ -1022,10 +1048,10 @@ def main(config_file=None, defaults=defaults, **args):
                 handle_empty(prefix, tag, comm_good, e, L)
                 continue
         else:
-            mapdata = write_hits_map(context, [obslist[ind] for ind in my_inds], subshape, subwcs, t0=t, comm=comm_good, tag=tag, verbose=args['verbose'],)
+            mapdata = write_hits_map(context, [obslist[ind] for ind in my_inds], subshape, subwcs, nside, nside_tile, t0=t, comm=comm_good, tag=tag, verbose=args['verbose'],)
             if comm_intra.rank == 0:
                 oname = "%s_%s.%s" % (prefix, "full_hits", 'fits')
-                enmap.write_map(oname, mapdata.hits)
+                enmap.write_map(oname, mapdata.hits) ## ER
     comm.Barrier()
     # gather the tags for writing into the sqlite database
     tags_total = comm_inter.gather(tags, root=0)
