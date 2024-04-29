@@ -1,6 +1,7 @@
 import numpy as np
 from pixell import enmap, utils, fft, tilemap, resample
 import so3g
+import importlib
 
 from .. import core
 from .. import tod_ops
@@ -596,3 +597,10 @@ def untile_healpix(tiled):
     compressed = untile_healpix_compressed(tiled)
     active_tiles = get_active_tiles(tiled)
     return decompress_healpix(compressed, active_tiles)
+
+def import_optional(module_name):
+    try:
+        module = importlib.import_module(module_name)
+        return module
+    except:
+        return None

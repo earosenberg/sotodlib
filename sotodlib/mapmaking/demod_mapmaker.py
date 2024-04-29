@@ -7,11 +7,8 @@ from .utilities import *
 from .pointing_matrix import *
 from types import SimpleNamespace
 
-try:
-    import healpy as hp
-    healpy_avail=True
-except ImportError:
-    healpy_avail=False
+hp = import_optional('healpy')
+h5py = import_optional('h5py')
 
 class DemodMapmaker:
     def __init__(self, signals=[], noise_model=None, dtype=np.float32, verbose=False, comps='TQU', singlestream=False):
@@ -37,7 +34,7 @@ class DemodMapmaker:
         self.ncomp        = len(comps)
         self.singlestream = singlestream
 
-    def add_obs(self, id, obs, noise_model=None, deslope=False, split_labels=None, det_weights=None, qp_kwargs={}):
+    def add_obs(self, id, obs, noise_model=None, deslope=False, split_labels=None, det_weights='ivar', qp_kwargs={}):
         # Prepare our tod
         ctime  = obs.timestamps
         srate  = (len(ctime)-1)/(ctime[-1]-ctime[0])
@@ -134,7 +131,7 @@ class DemodSignalMap(DemodSignal):
             self.div = enmap.zeros((Nsplits,ncomp,ncomp)+shape, wcs, dtype=dtype)
             self.hits= enmap.zeros((Nsplits,)+shape, wcs, dtype=dtype)
 
-    def add_obs(self, id, obs, nmat, Nd, pmap=None, split_labels=None, det_weights=None, qp_kwargs={}):
+    def add_obs(self, id, obs, nmat, Nd, pmap=None, split_labels=None, det_weights='ivar', qp_kwargs={}):
         # Nd will have 3 components, corresponding to ds_T, demodQ, demodU with the noise model applied
         """Add and process an observation, building the pointing matrix
         and our part of the RHS. "obs" should be an Observation axis manager,
@@ -227,7 +224,8 @@ class DemodSignalMapHealpix(DemodSignal):
         self.Nsplits = Nsplits
         self.singlestream = singlestream
         ncomp      = len(comps)
-        self.hp_geom = SimpleNamespace(nside=nside, nside_tile=nside_tile)
+        ordering = 'NEST' # Only NEST allowed for tiled maps
+        self.hp_geom = SimpleNamespace(nside=nside, nside_tile=nside_tile, ordering=ordering)
         npix = 12 * nside**2
         self.rhs = np.zeros((Nsplits, ncomp, npix), dtype=dtype)
         self.div = np.zeros((Nsplits, ncomp, ncomp, npix), dtype=dtype)
@@ -283,18 +281,22 @@ class DemodSignalMapHealpix(DemodSignal):
         assert (self.comm is None or self.comm.rank == 0) # Not really supporting comm but leave this here
         oname = self.ofmt.format(name=self.name)
         oname = "%s%s_%s.%s" % (prefix, oname, tag, self.ext)
+        if write_partial and self.ext != 'fits':
+            raise NotImplementedError("write_partial only supported for fits")
 
         if self.ext == "fits":
-            if not healpy_avail:
-                raise ValueError("Cannot save healpix map as fits; healpy could not be imported. Install healpy or save as .npy")
+            if hp is None:
+                raise ValueError("Cannot save healpix map as fits; healpy could not be imported. Install healpy or save as .npy or .h5")
             if m.ndim > 2:
                 m = np.reshape(m, (np.product(m.shape[:-1]), m.shape[-1])) # Flatten wrapping axes; healpy.write_map can't handle >2d array
-            hp.write_map(oname, m, nest=True, partial=write_partial) ## TODO Replace hard-coded nest
-
+            hp.write_map(oname, m, nest=(self.hp_geom.ordering=='NEST'), partial=write_partial) ## TODO Replace hard-coded nest
         elif self.ext == "npy":
-            if write_partial:
-                raise NotImplementedError("write_partial only supported for fits")
             np.save(oname, m)
+        elif self.ext in ['h5', 'hdf5']:
+            if h5py is None:
+                raise ValueError("Cannot save healpix map as hdf5; h5py could not be imported. Install h5py or save as .npy or .fits")
+            with h5py.File(oname, 'w') as f:
+                dset = f.create_dataset("data", m.shape, dtype=m.dtype)
         else:
             raise ValueError(f"Unknown extension {self.ext}")
 

@@ -436,7 +436,7 @@ class P:
     def _get_proj(self):
         interpol_kw = _get_interpol_args(self.interpol)
         if self.hp_geom is not None:
-            return so3g.proj.ProjectionistHealpix.for_healpix(self.hp_geom.nside, ordering='NEST', nside_tile=self.hp_geom.nside_tile, active_tiles=self.active_tiles, **interpol_kw)
+            return so3g.proj.ProjectionistHealpix.for_healpix(self.hp_geom.nside, ordering=self.hp_geom.ordering, nside_tile=self.hp_geom.nside_tile, active_tiles=self.active_tiles, **interpol_kw)
         elif self.geom is None:
             raise ValueError("Can't project without a geometry!")
         # Backwards compatibility for old so3g
