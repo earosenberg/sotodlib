@@ -48,10 +48,10 @@ defaults = {"query": "1",
 def get_parser(parser=None):
     if parser is None:
         parser = argparse.ArgumentParser()
-    parser.add_argument("--config-file", type=str, default=None, 
+    parser.add_argument("--config-file", type=str, default=None,
                      help="Path to mapmaker config.yaml file")
-    
-    parser.add_argument("--context", help='context file')    
+
+    parser.add_argument("--context", help='context file')
     parser.add_argument("--query", help='query, can be a file (list of obs_id) or selection string')
     parser.add_argument("--area", help='wcs geometry')
     parser.add_argument("--odir", help='output directory')
@@ -60,15 +60,15 @@ def get_parser(parser=None):
     parser.add_argument("--comps",   type=str,)
     parser.add_argument("--singlestream", action="store_true")
     parser.add_argument("--only_hits", action="store_true") # this will work only when we don't request splits, since I want to avoid loading the signal
-    
+
     # detector position splits (fixed in time)
     parser.add_argument("--det_in_out", action="store_true")
     parser.add_argument("--det_left_right", action="store_true")
     parser.add_argument("--det_upper_lower", action="store_true")
-    
+
     # time samples splits
     parser.add_argument("--scan_left_right", action="store_true")
-    
+
     parser.add_argument("--ntod",    type=int, )
     parser.add_argument("--tods",    type=str, )
     parser.add_argument("--nset",    type=int, )
@@ -91,20 +91,20 @@ def _get_config(config_file):
     return yaml.safe_load(open(config_file,'r'))
 
 def get_ra_ref(obs, site='so_sat1'):
-    # pass an AxisManager of the observation, and return two ra_ref @ dec=-40 deg.   
-    # 
+    # pass an AxisManager of the observation, and return two ra_ref @ dec=-40 deg.
+    #
     #t = [obs.obs_info.start_time, obs.obs_info.start_time, obs.obs_info.stop_time, obs.obs_info.stop_time]
     t_start = obs.obs_info.start_time
     t_stop = obs.obs_info.stop_time
     az = np.arange((obs.obs_info.az_center-0.5*obs.obs_info.az_throw)*utils.degree, (obs.obs_info.az_center+0.5*obs.obs_info.az_throw)*utils.degree, 0.5*utils.degree)
     el = obs.obs_info.el_center*utils.degree
-    
+
     csl = so3g.proj.CelestialSightLine.az_el(t_start*np.ones(len(az)), az, el*np.ones(len(az)), site=site, weather='toco')
     ra_, dec_ = csl.coords().transpose()[:2]
     #spline = interpolate.CubicSpline(dec_, ra_, bc_type='not-a-knot')
     ra_ref_start = np.interp(-40*utils.degree, dec_, ra_)
     #ra_ref_start = spline(-40*utils.degree, nu=0)
-    
+
     csl = so3g.proj.CelestialSightLine.az_el(t_stop*np.ones(len(az)), az, el*np.ones(len(az)), site=site, weather='toco')
     ra_, dec_ = csl.coords().transpose()[:2]
     #spline = interpolate.CubicSpline(dec_, ra_, bc_type='not-a-knot')
@@ -143,7 +143,7 @@ def find_scan_profile(context, my_tods, my_infos, comm=mpi.COMM_WORLD, npoint=10
     first   = np.where(comm.allgather([len(my_tods)]))[0][0]
     if comm.rank == first:
         tod, info = my_tods[0], my_infos[0]
-        # Find our array's central pointing offset. 
+        # Find our array's central pointing offset.
         fp   = tod.focal_plane
         xi0  = np.mean(utils.minmax(fp.xi))
         eta0 = np.mean(utils.minmax(fp.eta))
@@ -214,7 +214,7 @@ def correct_hwp(obs, bandpass='f090'):
             elif bandpass == 'f150':
                 obs.hwp_angle = np.mod(-1*obs.hwp_angle + np.deg2rad(-1.66-1.99-90), 2*np.pi)
     return;
-    
+
 def calibrate_obs_with_preprocessing(obs, dtype_tod=np.float32, site='so_sat1', det_left_right=False, det_in_out=False, det_upper_lower=False):
     obs.wrap("weather", np.full(1, "toco"))
     obs.wrap("site",    np.full(1, site))
@@ -222,10 +222,10 @@ def calibrate_obs_with_preprocessing(obs, dtype_tod=np.float32, site='so_sat1', 
     # Since now I have flags already calculated, I can union them into a "glitch_flags" flags, which will be used to discard overcut detectors and calculate the cost for MPI.
     # Union of flags into glitch_flags.
     obs.flags.wrap('glitch_flags', obs.preprocess.turnaround_flags.turnarounds + obs.preprocess.jumps_2pi.jump_flag + obs.preprocess.glitches.glitch_flags, )
-    
+
     good_dets = mapmaking.find_usable_detectors(obs)
     obs.restrict("dets", good_dets)
-    
+
     if obs.signal is not None and len(good_dets)>0:
         # Adding detector splits if we asked for them
         if det_left_right or det_in_out or det_upper_lower:
@@ -233,8 +233,8 @@ def calibrate_obs_with_preprocessing(obs, dtype_tod=np.float32, site='so_sat1', 
             obs.wrap('det_flags', FlagManager.for_tod(obs))
             if det_left_right or det_in_out:
                 xi = obs.focal_plane.xi
-                # sort xi 
-                xi_median = np.median(xi)    
+                # sort xi
+                xi_median = np.median(xi)
             if det_upper_lower or det_in_out:
                 eta = obs.focal_plane.eta
                 # sort eta
@@ -259,7 +259,7 @@ def calibrate_obs_with_preprocessing(obs, dtype_tod=np.float32, site='so_sat1', 
                 obs.det_flags.wrap_dets('det_in', np.logical_not(mask))
                 mask = radii > radius_median
                 obs.det_flags.wrap_dets('det_out', np.logical_not(mask))
-         
+
         detrend_tod(obs, method='median', signal_name='hwpss_remove')
         obs.signal = np.multiply(obs.signal.T, obs.det_cal.phase_to_pW).T
         obs.hwpss_remove = np.multiply(obs.hwpss_remove.T, obs.det_cal.phase_to_pW).T
@@ -320,7 +320,7 @@ def calibrate_obs_with_preprocessing(obs, dtype_tod=np.float32, site='so_sat1', 
         ivar = 1.0/np.var(obs.demodQ, axis=-1)
         mask_det = ivar > np.percentile(ivar, 95)
         obs.restrict('dets', obs.dets.vals[~mask_det])
-        
+
     return obs
 
 def model_func(x, sigma, fk, alpha):
@@ -336,15 +336,15 @@ def calibrate_obs_tomoki(obs, dtype_tod=np.float32, site='so_sat1', det_left_rig
     # Restrict non optical detectors, which have nans in their focal plane coordinates and will crash the mapmaking operation.
     obs.restrict('dets', obs.dets.vals[obs.det_info.wafer.type == 'OPTC'])
     obs.restrict('dets', obs.dets.vals[(0.2<obs.det_cal.r_frac)&(obs.det_cal.r_frac<0.8)])
-    
+
     if obs.signal is not None:
         if det_left_right or det_in_out or det_upper_lower:
             # we add a flagmanager for the detector flags
             obs.wrap('det_flags', FlagManager.for_tod(obs))
             if det_left_right or det_in_out:
                 xi = obs.focal_plane.xi
-                # sort xi 
-                xi_median = np.median(xi)    
+                # sort xi
+                xi_median = np.median(xi)
             if det_upper_lower or det_in_out:
                 eta = obs.focal_plane.eta
                 # sort eta
@@ -369,35 +369,35 @@ def calibrate_obs_tomoki(obs, dtype_tod=np.float32, site='so_sat1', det_left_rig
                 obs.det_flags.wrap_dets('det_in', np.logical_not(mask))
                 mask = radii > radius_median
                 obs.det_flags.wrap_dets('det_out', np.logical_not(mask))
-        
+
         nperseg = 200*1000
-        
+
         obs.focal_plane.gamma = np.arctan(np.tan(obs.focal_plane.gamma))
         flags.get_turnaround_flags(obs, t_buffer=0.1, truncate=True)
         obs.signal = np.multiply(obs.signal.T, obs.det_cal.phase_to_pW).T
         freq, Pxx = fft_ops.calc_psd(obs, nperseg=nperseg, merge=True)
         wn = fft_ops.calc_wn(obs)
         obs.wrap('wn', wn, [(0, 'dets')])
-                    
+
         obs.restrict('dets', obs.dets.vals[(20<obs.wn*1e6)&(obs.wn*1e6<40)])
         print(f'dets: {obs.dets.count}')
-        
+
         # peak to peak restrict
         obs.restrict('dets', obs.dets.vals[np.ptp(obs.signal, axis=1) < 0.5])
         print(f'dets: {obs.dets.count}')
-        
+
         if obs.dets.count<=1: return obs
-        
+
         hwp.get_hwpss(obs)
         hwp.subtract_hwpss(obs)
         obs.move('signal', None)
         obs.move('hwpss_remove', 'signal')
         freq, Pxx = fft_ops.calc_psd(obs, nperseg=nperseg, merge=False)
         obs.Pxx = Pxx
-        
+
         detrend_tod(obs, method='median')
         apodize.apodize_cosine(obs, apodize_samps=2000)
-        
+
         # the demodulation will happen here
         speed = (np.sum(np.abs(np.diff(np.unwrap(obs.hwp_angle)))) /
                 (obs.timestamps[-1] - obs.timestamps[0])) / (2 * np.pi)
@@ -413,7 +413,7 @@ def calibrate_obs_tomoki(obs, dtype_tod=np.float32, site='so_sat1', det_left_rig
                    'cutoff': lpf_cutoff,
                    'trans_width': 0.1}
         hwp.demod_tod(obs, bpf_cfg=bpf_cfg, lpf_cfg=lpf_cfg)
-        
+
         obs.restrict('samps', (obs.samps.offset+2000, obs.samps.offset + obs.samps.count-2000))
         obs.move('signal', None)
         detrend_tod(obs, signal_name='dsT', method='linear')
@@ -423,9 +423,9 @@ def calibrate_obs_tomoki(obs, dtype_tod=np.float32, site='so_sat1', det_left_rig
         freq, Pxx_demodU = fft_ops.calc_psd(obs, signal=obs.demodU, nperseg=nperseg, merge=True)
         obs.wrap('Pxx_demodQ', Pxx_demodQ, [(0, 'dets'), (1, 'nusamps')])
         obs.wrap('Pxx_demodU', Pxx_demodU, [(0, 'dets'), (1, 'nusamps')])
-        
+
         mask = np.ones_like(obs.dsT, dtype='bool')
-    
+
         lamQ, lamU = [], []
         AQ, AU = [], []
 
@@ -459,7 +459,7 @@ def calibrate_obs_tomoki(obs, dtype_tod=np.float32, site='so_sat1', det_left_rig
         freq, Pxx_demodU_new = fft_ops.calc_psd(obs, signal=obs.demodU, nperseg=nperseg, merge=False)
         obs.Pxx_demodQ = Pxx_demodQ_new
         obs.Pxx_demodU = Pxx_demodU_new
-        
+
         mask_valid_freqs = (1e-4<obs.freqs) & (obs.freqs < 1.9)
         x = obs.freqs[mask_valid_freqs]
         obs.wrap_new('sigma', ('dets', ))
@@ -472,11 +472,11 @@ def calibrate_obs_tomoki(obs, dtype_tod=np.float32, site='so_sat1', det_left_rig
             obs.sigma[di] = popt[0]
             obs.fk[di] = popt[1]
             obs.alpha[di] = popt[2]
-        
+
         kurt_threshold=0.5
         skew_threshold=0.5
-        
-        valid_scan = np.logical_and(np.logical_or(obs.flags["left_scan"].mask(), 
+
+        valid_scan = np.logical_and(np.logical_or(obs.flags["left_scan"].mask(),
                                               obs.flags["right_scan"].mask()),
                                 ~obs.flags["turnarounds"].mask())
 
@@ -526,7 +526,7 @@ def calibrate_obs_tomoki(obs, dtype_tod=np.float32, site='so_sat1', det_left_rig
         badsubscan_flags = so3g.proj.RangesMatrix.from_mask(badsubscan_flags)
 
         obs.flags.wrap('bad_subscan', badsubscan_flags)
-        
+
         filt = filters.counter_1_over_f(np.median(obs.fk), -2*np.median(obs.alpha))
         obs.demodQ = filters.fourier_filter(obs, filt, signal_name='demodQ')
         obs.demodU = filters.fourier_filter(obs, filt, signal_name='demodU')
@@ -536,14 +536,14 @@ def calibrate_obs_tomoki(obs, dtype_tod=np.float32, site='so_sat1', det_left_rig
 
         obs.Pxx_demodQ = Pxx_demodQ
         obs.Pxx_demodU = Pxx_demodU
-        
+
         wn = fft_ops.calc_wn(obs, obs.Pxx_demodQ, low_f=0.1, high_f=1.)
         obs.wrap('inv_var', wn**(-2), [(0, 'dets')])
         if True:
             lo, hi = np.percentile(obs.inv_var, [3, 97])
             obs.restrict('dets', obs.dets.vals[(lo < obs.inv_var) & (obs.inv_var < hi)])
         if obs.dets.count<=1: return obs
-    
+
         glitches_T = flags.get_glitch_flags(obs, signal_name='dsT', merge=True, name='glitches_T')
         glitches_Q = flags.get_glitch_flags(obs, signal_name='demodQ', merge=True, name='glitches_Q')
         glitches_U = flags.get_glitch_flags(obs, signal_name='demodU', merge=True, name='glitches_U')
@@ -558,7 +558,7 @@ def calibrate_obs_new(obs, dtype_tod=np.float32, site='so_sat1', det_left_right=
     obs.wrap('glitch_flags', so3g.proj.RangesMatrix.zeros(obs.shape[:2]),[(0, 'dets'), (1, 'samps')])
     # Restrict non optical detectors, which have nans in their focal plane coordinates and will crash the mapmaking operation.
     obs.restrict('dets', obs.dets.vals[obs.det_info.wafer.type == 'OPTC'])
-    
+
     if obs.signal is not None:
         # this will happen in the read_tod call, where we will add the detector flags
         if det_left_right or det_in_out or det_upper_lower:
@@ -566,8 +566,8 @@ def calibrate_obs_new(obs, dtype_tod=np.float32, site='so_sat1', det_left_right=
             obs.wrap('det_flags', FlagManager.for_tod(obs))
             if det_left_right or det_in_out:
                 xi = obs.focal_plane.xi
-                # sort xi 
-                xi_median = np.median(xi)    
+                # sort xi
+                xi_median = np.median(xi)
             if det_upper_lower or det_in_out:
                 eta = obs.focal_plane.eta
                 # sort eta
@@ -592,7 +592,7 @@ def calibrate_obs_new(obs, dtype_tod=np.float32, site='so_sat1', det_left_right=
                 obs.det_flags.wrap_dets('det_in', np.logical_not(mask))
                 mask = radii > radius_median
                 obs.det_flags.wrap_dets('det_out', np.logical_not(mask))
-                
+
     # this is from Max's notebook
     if obs.signal is not None:
         flags.get_det_bias_flags(obs, rfrac_range=(0.05, 0.9), psat_range=(0, 20))
@@ -617,7 +617,7 @@ def calibrate_obs_new(obs, dtype_tod=np.float32, site='so_sat1', det_left_right=
         detrend_tod(obs, method='median', signal_name='hwpss_remove')
         obs.signal = np.multiply(obs.signal.T, obs.det_cal.phase_to_pW).T
         obs.hwpss_remove = np.multiply(obs.hwpss_remove.T, obs.det_cal.phase_to_pW).T
-        
+
         #LPF and PCA
         if True:
             filt = filters.low_pass_sine2(1, width=0.1)
@@ -631,7 +631,7 @@ def calibrate_obs_new(obs, dtype_tod=np.float32, site='so_sat1', det_left_right=
             median = np.median(pca_signal.weights[:,0])
             obs.signal = np.divide(obs.signal.T, pca_signal.weights[:,0]/median).T
         flags.get_turnaround_flags(obs, t_buffer=0.1, truncate=True)
-        apodize.apodize_cosine(obs, apodize_samps=800)  
+        apodize.apodize_cosine(obs, apodize_samps=800)
     return obs
 
 def calibrate_obs(obs, dtype_tod=np.float32):
@@ -645,13 +645,13 @@ def calibrate_obs(obs, dtype_tod=np.float32):
     # CARLOS: We have to add glitch_flags by hand
     obs = obs.wrap('glitch_flags', so3g.proj.RangesMatrix.zeros(obs.shape[:2]),[(0, 'dets'), (1, 'samps')])
     obs = obs.restrict("samps", [0, fft.fft_len(obs.samps.count)])
-    
+
     if obs.signal is not None:
         # FLAGS
         flags.get_turnaround_flags(obs)
         #tod_ops.flags.get_det_bias_flags(obs)
         #obs.wrap('flags.det_bias_flags', so3g.proj.RangesMatrix.zeros(obs.shape[:2]),[(0, 'dets'), (1, 'samps')])
-        
+
         # DETRENDING
         tod_ops.detrend.detrend_tod(obs, in_place=True)
         utils.deslope(obs.signal, w=5, inplace=True)
@@ -659,7 +659,7 @@ def calibrate_obs(obs, dtype_tod=np.float32):
     # Disqualify overly cut detectors
     good_dets = mapmaking.find_usable_detectors(obs)
     #obs.restrict("dets", good_dets)
-    
+
     # remove detectors with an std greater than 5
     if obs.signal is not None:
         mask = np.std(obs.signal, axis=1) > 0.01
@@ -680,7 +680,7 @@ def calibrate_obs(obs, dtype_tod=np.float32):
         # since some of the calibrations are nans, we make a flags
         mask_notfinite = np.logical_not(np.isfinite(obs.signal)) # we want the nan detectors to be true in this mask
         obs = obs.wrap("flags_notfinite", so3g.proj.RangesMatrix.from_mask(mask_notfinite),[(0, 'dets'), (1, 'samps')])
-        
+
         # Fourier-space calibration
         #fsig  = fft.rfft(obs.signal)
         #freq  = fft.rfftfreq(obs.samps.count, 1/srate)
@@ -722,9 +722,9 @@ def read_tods(context, obslist, inds=None, comm=mpi.COMM_WORLD, no_signal=False,
 def write_hits_map(context, obslist, shape, wcs, t0=0, comm=mpi.COMM_WORLD, tag="", verbose=0, site='so_sat1'):
     L = logging.getLogger(__name__)
     pre = "" if tag is None else tag + " "
-    
+
     hits = enmap.zeros(shape, wcs, dtype=np.float64)
-    
+
     for oi in range(len(obslist)):
         obs_id, detset, band = obslist[oi][:3]
         name = "%s:%s:%s" % (obs_id, detset, band)
@@ -767,9 +767,9 @@ def make_depth1_map(context, obslist, shape, wcs, noise_model, comps="TQU", t0=0
         correct_hwp(obs, bandpass=band)
         #obs = calibrate_obs_tomoki(obs, dtype_tod=dtype_tod, det_in_out=det_in_out, det_left_right=det_left_right, det_upper_lower=det_upper_lower, site=site)
         if obs.dets.count <= 1: continue
-        obs = calibrate_obs_with_preprocessing(obs, dtype_tod=dtype_tod, det_in_out=det_in_out, det_left_right=det_left_right, det_upper_lower=det_upper_lower, site=site)        
+        obs = calibrate_obs_with_preprocessing(obs, dtype_tod=dtype_tod, det_in_out=det_in_out, det_left_right=det_left_right, det_upper_lower=det_upper_lower, site=site)
         if obs.dets.count == 0: continue
-        
+
         # And add it to the mapmaker
         if split_labels==None:
             # this is the case of no splits
@@ -777,10 +777,10 @@ def make_depth1_map(context, obslist, shape, wcs, noise_model, comps="TQU", t0=0
         else:
             # this is the case of having splits. We need to pass the split_labels at least. If we have detector splits fixed in time, then we pass the masks in det_split_masks. Otherwise, det_split_masks will be None
             mapmaker.add_obs(name, obs, split_labels=split_labels)
-            
+
         nobs_kept += 1
         L.info('Done with tod %s:%s:%s'%(obs_id,detset,band))
-    
+
     nobs_kept = comm.allreduce(nobs_kept)
     if nobs_kept == 0: raise DataMissing("All data cut")
     for signal in signals:
@@ -850,14 +850,14 @@ def handle_empty(prefix, tag, comm, e, L):
         utils.mkdir(os.path.dirname(prefix))
         with open(prefix + ".empty", "w") as ofile: ofile.write("\n")
 
-def main(config_file=None, defaults=defaults, **args):    
+def main(config_file=None, defaults=defaults, **args):
     cfg = dict(defaults)
     # Update the default dict with values provided from a config.yaml file
     if config_file is not None:
         cfg_from_file = _get_config(config_file)
         cfg.update({k: v for k, v in cfg_from_file.items() if v is not None})
     else:
-        print("No config file provided, assuming default values") 
+        print("No config file provided, assuming default values")
     # Merge flags from config file and defaults with any passed through CLI
     cfg.update({k: v for k, v in args.items() if v is not None})
     # Certain fields are required. Check if they are all supplied here
@@ -867,7 +867,7 @@ def main(config_file=None, defaults=defaults, **args):
             raise KeyError("{} is a required argument. Please supply it in a config file or via the command line".format(req))
     args = cfg
     warnings.simplefilter('ignore')
-    
+
     # Set up our communicators
     comm       = mpi.COMM_WORLD
     comm_intra = comm.Split(comm.rank // args['tasks_per_group'])
@@ -881,11 +881,11 @@ def main(config_file=None, defaults=defaults, **args):
     ncomp      = len(args['comps'])
     meta_only  = False
     utils.mkdir(args['odir'])
-    
+
     recenter = None
     if args['center_at']:
         recenter = mapmaking.parse_recentering(args['center_at'])
-    
+
     # Set up logging.
     L   = logging.getLogger(__name__)
     L.setLevel(logging.INFO)
@@ -899,7 +899,7 @@ def main(config_file=None, defaults=defaults, **args):
     obslists, obskeys, periods, obs_infos = mapmaking.build_obslists(context, args['query'], mode=args['mode'], nset=args['nset'], wafer=args['wafer'], freq=args['freq'], ntod=args['ntod'], tods=args['tods'], fixed_time=args['fixed_time'], mindur=args['mindur'])
     tags = []
     cwd = os.getcwd()
-    
+
     split_labels = []
     if args['det_in_out']:
         split_labels.append('det_in')
@@ -914,9 +914,9 @@ def main(config_file=None, defaults=defaults, **args):
         split_labels.append('scan_left')
         split_labels.append('scan_right')
     if not split_labels:
-        #if the list 
+        #if the list
         split_labels = None
-    
+
     # we open the data base for checking
     if os.path.isfile('./'+args['atomic_db']) and not args['only_hits']:
         conn = sqlite3.connect('./'+args['atomic_db']) # open the connector, in reading mode only
@@ -931,7 +931,7 @@ def main(config_file=None, defaults=defaults, **args):
                 if len(matches)>0:
                     # this means the map (key,value) is already in the data base, so we have to remove it to not run it again
                     # it seems that removing the maps from the obskeys is enough.
-                    obskeys.remove(key) 
+                    obskeys.remove(key)
             else:
                 # we are asking for splits
                 missing_split = False
@@ -947,7 +947,7 @@ def main(config_file=None, defaults=defaults, **args):
                     # this means we have all the splits we requested for the particular obs_id/telescope/freq/wafer
                     obskeys.remove(key)
         conn.close() # I close since I only wanted to read
-    
+
     # Loop over obslists and map them
     for oi in range(comm_inter.rank, len(obskeys), comm_inter.size):
         pid, detset, band = obskeys[oi]
@@ -955,13 +955,13 @@ def main(config_file=None, defaults=defaults, **args):
         t       = utils.floor(periods[pid,0])
         t5      = ("%05d" % t)[:5]
         prefix  = "%s/%s/atomic_%010d_%s_%s" % (args['odir'], t5, t, detset, band)
-        
+
         tag     = "%5d/%d" % (oi+1, len(obskeys))
         utils.mkdir(os.path.dirname(prefix))
         meta_done = os.path.isfile(prefix + "_full_info.hdf")
         maps_done = os.path.isfile(prefix + ".empty") or (
             os.path.isfile(prefix + "_full_map.fits") and
-            os.path.isfile(prefix + "_full_ivar.fits") and 
+            os.path.isfile(prefix + "_full_ivar.fits") and
             os.path.isfile(prefix + "_full_hits.fits")
         )
         #if cont and meta_done and (maps_done or meta_only): continue
@@ -976,7 +976,7 @@ def main(config_file=None, defaults=defaults, **args):
             # 2. prune tods that have no valid detectors
             valid     = np.where(my_costs>0)[0]
             my_tods, my_inds, my_costs = [[a[vi] for vi in valid] for a in [my_tods, my_inds, my_costs]]
-            
+
             # this is for the tags
             if not args['only_hits']:
                 if split_labels is None:
@@ -986,7 +986,7 @@ def main(config_file=None, defaults=defaults, **args):
                     # splits were requested and we loop over them
                     for split_label in split_labels:
                         tags.append( (obslist[0][0], obs_infos[obslist[0][3]].telescope, band, detset, int(t), split_label, '', cwd+'/'+prefix+'_%s'%split_label, obs_infos[obslist[0][3]].el_center, obs_infos[obslist[0][3]].az_center, my_ra_ref[0][0], my_ra_ref[0][1], 0.0) )
-            
+
             all_inds  = utils.allgatherv(my_inds,     comm_intra)
             all_costs = utils.allgatherv(my_costs,    comm_intra)
             if len(all_inds)  == 0: raise DataMissing("No valid tods")
@@ -1034,14 +1034,14 @@ def main(config_file=None, defaults=defaults, **args):
         # Write into the atomic map database.
         conn = sqlite3.connect('./'+args['atomic_db']) # open the conector, if the database exists then it will be opened, otherwise it will be created
         cursor = conn.cursor()
-        
+
         # Check if the table exists, if not create it
         # the tags will be telescope, frequency channel, wafer, ctime, split_label, split_details, prefix_path, elevation, pwv
         cursor.execute("""CREATE TABLE IF NOT EXISTS atomic (
                           obs_id TEXT,
-                          telescope TEXT, 
-                          freq_channel TEXT, 
-                          wafer TEXT, 
+                          telescope TEXT,
+                          freq_channel TEXT,
+                          wafer TEXT,
                           ctime INTEGER,
                           split_label TEXT,
                           split_detail TEXT,
@@ -1053,11 +1053,11 @@ def main(config_file=None, defaults=defaults, **args):
                           pwv REAL
                           )""")
         conn.commit()
-        
+
         for tuple_ in tags_total:
             cursor.execute("INSERT INTO atomic VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tuple_)
         conn.commit()
-        
+
         conn.close()
         print("Done")
     return True
