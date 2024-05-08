@@ -1,4 +1,4 @@
-from argparse import ArgumentParser
+import argparse
 import numpy as np, sys, time, warnings, os, so3g, logging, yaml, sqlite3, itertools
 from sotodlib import coords, mapmaking
 from sotodlib.core import Context,  metadata as metadata_core, FlagManager
@@ -59,8 +59,8 @@ def get_parser(parser=None):
     parser.add_argument("--context", help='context file')
     parser.add_argument("--query", help='query, can be a file (list of obs_id) or selection string')
     parser.add_argument("--area", help='wcs geometry')
-    parser.add_argument("--nside", help='healpix nside')
-    parser.add_argmuent("--nside_tile", help='nside for healpix tiles; can be None, "auto", or int')
+    parser.add_argument("--nside", type=int, help='healpix nside')
+    parser.add_argument("--nside_tile", help='nside for healpix tiles; can be None, "auto", or int')
     parser.add_argument("--odir", help='output directory')
     parser.add_argument("--ext", help='output file extension')
     parser.add_argument("--preprocess_config", type=str, help='file with the config file to run the preprocessing pipeline')
@@ -390,6 +390,7 @@ def calibrate_obs_tomoki(obs, dtype_tod=np.float32, site='so_sat1', det_left_rig
         obs.restrict('dets', obs.dets.vals[(20<obs.wn*1e6)&(obs.wn*1e6<40)])
         print(f'dets: {obs.dets.count}')
 
+        if obs.dets.count<=1: return obs
         # peak to peak restrict
         obs.restrict('dets', obs.dets.vals[np.ptp(obs.signal, axis=1) < 0.5])
         print(f'dets: {obs.dets.count}')
@@ -900,8 +901,11 @@ def main(config_file=None, defaults=defaults, **args):
         wcs        = wcsutils.WCS(wcs.to_header())
     else:
         shape, wcs = None, None
+
     nside = args['nside']
+    if nside is not None: nside = int(nside)
     nside_tile = args['nside_tile']
+    if nside_tile is not None and nside_tile != 'auto': nside_tile = int(nside_tile)
 
     noise_model = mapmaking.NmatWhite()
     ncomp      = len(args['comps'])
