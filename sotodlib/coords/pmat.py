@@ -476,7 +476,8 @@ class P:
             else:
                 tile_info = proj.get_active_tiles(self._get_asm())
             self.active_tiles = tile_info['active_tiles']
-            proj = self._get_proj()
+            self.hp_geom.nside_tile = proj.nside_tile # Update nside_tile if it was 'auto'
+            proj = self._get_proj() # Add active_tiles to proj
 
         if self.threads is False:
             return proj, ~cuts
