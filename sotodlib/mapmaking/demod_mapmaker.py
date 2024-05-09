@@ -288,7 +288,7 @@ class DemodSignalMapHealpix(DemodSignal):
             if hp is None:
                 raise ValueError("Cannot save healpix map as fits; healpy could not be imported. Install healpy or save as .npy or .h5")
             if m.ndim > 2:
-                m = np.reshape(m, (np.product(m.shape[:-1]), m.shape[-1])) # Flatten wrapping axes; healpy.write_map can't handle >2d array
+                m = np.reshape(m, (np.product(m.shape[:-1]), m.shape[-1]), order='C') # Flatten wrapping axes; healpy.write_map can't handle >2d array
             hp.write_map(oname, m, nest=(self.hp_geom.ordering=='NEST'), partial=write_partial) ## TODO Replace hard-coded nest
         elif self.ext == "npy":
             np.save(oname, m)
@@ -296,7 +296,7 @@ class DemodSignalMapHealpix(DemodSignal):
             if h5py is None:
                 raise ValueError("Cannot save healpix map as hdf5; h5py could not be imported. Install h5py or save as .npy or .fits")
             with h5py.File(oname, 'w') as f:
-                dset = f.create_dataset("data", m.shape, dtype=m.dtype)
+                dset = f.create_dataset("data", m.shape, dtype=m.dtype, data=m)
         else:
             raise ValueError(f"Unknown extension {self.ext}")
 
