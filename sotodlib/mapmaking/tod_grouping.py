@@ -109,7 +109,8 @@ def build_period_obslists(obs_info, periods, context, nset=None, wafer=None, fre
     # 2. Build our lists. Not sure how to do this without looping
     for i, row in enumerate(obs_info):
         if wafer is not None:
-            wafer_list = [wafer]
+            wafer_list = wafer.split()
+            #wafer_list = [wafer]
         else:
             meta = context.get_meta(row.obs_id)
             wafer_list = np.unique(meta.det_info.wafer_slot)

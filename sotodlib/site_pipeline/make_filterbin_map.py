@@ -16,6 +16,7 @@ from types import SimpleNamespace
 #from tqdm import tqdm
 from . import util
 
+import healpy as hp
 defaults = {"query": "1",
             "area": None,
             "nside": None,
@@ -48,6 +49,7 @@ defaults = {"query": "1",
             "fixed_time": None,
             "mindur": None,
             "ext": "fits",
+            "context_basic": None,
            }
 
 def get_parser(parser=None):
@@ -57,6 +59,7 @@ def get_parser(parser=None):
                      help="Path to mapmaker config.yaml file")
 
     parser.add_argument("--context", help='context file')
+    parser.add_argument("--context_basic", help='context file')
     parser.add_argument("--query", help='query, can be a file (list of obs_id) or selection string')
     parser.add_argument("--area", help='wcs geometry')
     parser.add_argument("--nside", type=int, help='healpix nside')
@@ -889,9 +892,12 @@ def main(config_file=None, defaults=defaults, **args):
     L.addHandler(ch)
 
     context = Context(args['context'])
+    # This is done to minimize the metadata loaded when making obslists and eliminate slow and annoying "trimming" step when there is mismatch in the dbs
+    context_basic = Context(args['context_basic']) if (args['context_basic'] is not None) else context # This breaks the automatic wafer_slot loading; have to explicitly give wafer numbers in config
+
     # obslists is a dict, obskeys is a list, periods is an array, only rank 0 will do this and broadcast to others.
     if comm.rank==0:
-        obslists, obskeys, periods, obs_infos = mapmaking.build_obslists(context, args['query'], mode=args['mode'], nset=args['nset'], wafer=args['wafer'], freq=args['freq'], ntod=args['ntod'], tods=args['tods'], fixed_time=args['fixed_time'], mindur=args['mindur'])
+        obslists, obskeys, periods, obs_infos = mapmaking.build_obslists(context_basic, args['query'], mode=args['mode'], nset=args['nset'], wafer=args['wafer'], freq=args['freq'], ntod=args['ntod'], tods=args['tods'], fixed_time=args['fixed_time'], mindur=args['mindur'])
         L.info('Done with build_obslists')
     else:
         obslists = None ; obskeys = None; periods=None ; obs_infos = None
@@ -947,37 +953,45 @@ def main(config_file=None, defaults=defaults, **args):
             del obslists[key]
         conn.close() # I close since I only wanted to read
 
-    obslist = [item[0] for key, item in obslists.items()]
-    my_tods, my_inds, my_ra_ref = read_tods(context, obslist, comm=comm, dtype_tod=args['dtype_tod'], only_hits=args['only_hits'])
-    my_costs     = np.array([tod.samps.count*len(mapmaking.find_usable_detectors(tod)) for tod in my_tods])
-    valid        = np.where(my_costs>0)[0]
-    my_tods_2, my_inds_2, my_costs = [[a[vi] for vi in valid] for a in [my_tods, my_inds, my_costs]]
-    # we will do the profile and footprint here, and then allgather the subshapes and subwcs. This way we don't have to communicate the massive arrays such as timestamps
-    subshapes = [] ; subwcses = []
-    for idx,oi in enumerate(my_inds_2):
-        pid, detset, band = obskeys[oi]
-        obslist = obslists[obskeys[oi]]
-        my_tods_atomic = [my_tods_2[idx]] ; my_infos = [obs_infos[obslist[0][3]]]
-        if recenter is None and shape is not None:
-            subshape, subwcs = find_footprint(context, my_tods_atomic, wcs, comm=comm_intra)
-            subshapes.append(subshape) ; subwcses.append(subwcs)
-        else:
-            subshape = shape; subwcs = wcs
-            subshapes.append(subshape) ; subwcses.append(subwcs)
-    all_inds              = utils.allgatherv(my_inds_2, comm)
-    all_costs             = utils.allgatherv(my_costs, comm)
-    all_ra_ref            = comm.allgather(my_ra_ref)
-    all_subshapes         = comm.allgather(subshapes)
-    all_subwcses          = comm.allgather(subwcses)
-    all_ra_ref_flatten    = [x for xs in all_ra_ref for x in xs]
-    all_subshapes_flatten = [x for xs in all_subshapes for x in xs]
-    all_subwcses_flatten  = [x for xs in all_subwcses for x in xs]
-    mask_weights = utils.equal_split(all_costs, comm.size)[comm.rank]
-    my_inds_2    = all_inds[mask_weights]
-    my_ra_ref    = [all_ra_ref_flatten[idx] for idx in mask_weights]
-    my_subshapes = [all_subshapes_flatten[idx] for idx in mask_weights]
-    my_subwcses  = [all_subwcses_flatten[idx] for idx in mask_weights]
-    del obslist, my_inds, my_tods, my_costs, valid, all_inds, all_costs, all_ra_ref, all_ra_ref_flatten, mask_weights, all_subshapes_flatten, all_subwcses_flatten, my_tods_2
+    if area is not None:
+        obslist = [item[0] for key, item in obslists.items()]
+        my_tods, my_inds, my_ra_ref = read_tods(context, obslist, comm=comm, dtype_tod=args['dtype_tod'], only_hits=args['only_hits'])
+        my_costs     = np.array([tod.samps.count*len(mapmaking.find_usable_detectors(tod)) for tod in my_tods])
+        valid        = np.where(my_costs>0)[0]
+        my_tods_2, my_inds_2, my_costs = [[a[vi] for vi in valid] for a in [my_tods, my_inds, my_costs]]
+        # we will do the profile and footprint here, and then allgather the subshapes and subwcs. This way we don't have to communicate the massive arrays such as timestamps
+        subshapes = [] ; subwcses = []
+        for idx,oi in enumerate(my_inds_2):
+            pid, detset, band = obskeys[oi]
+            obslist = obslists[obskeys[oi]]
+            my_tods_atomic = [my_tods_2[idx]] ; my_infos = [obs_infos[obslist[0][3]]]
+            if recenter is None and shape is not None:
+                subshape, subwcs = find_footprint(context, my_tods_atomic, wcs, comm=comm_intra)
+                subshapes.append(subshape) ; subwcses.append(subwcs)
+            else:
+                subshape = shape; subwcs = wcs
+                subshapes.append(subshape) ; subwcses.append(subwcs)
+        all_inds              = utils.allgatherv(my_inds_2, comm)
+        all_costs             = utils.allgatherv(my_costs, comm)
+        all_ra_ref            = comm.allgather(my_ra_ref)
+        all_subshapes         = comm.allgather(subshapes)
+        all_subwcses          = comm.allgather(subwcses)
+        all_ra_ref_flatten    = [x for xs in all_ra_ref for x in xs]
+        all_subshapes_flatten = [x for xs in all_subshapes for x in xs]
+        all_subwcses_flatten  = [x for xs in all_subwcses for x in xs]
+        mask_weights = utils.equal_split(all_costs, comm.size)[comm.rank]
+        my_inds_2    = all_inds[mask_weights]
+        my_ra_ref    = [all_ra_ref_flatten[idx] for idx in mask_weights]
+        my_subshapes = [all_subshapes_flatten[idx] for idx in mask_weights]
+        my_subwcses  = [all_subwcses_flatten[idx] for idx in mask_weights]
+        del obslist, my_inds, my_tods, my_costs, valid, all_inds, all_costs, all_ra_ref, all_ra_ref_flatten, mask_weights, all_subshapes_flatten, all_subwcses_flatten, my_tods_2
+    else:
+        obslist = [item[0] for key, item in obslists.items()]
+        my_inds_2 = list(range(comm.rank, len(obslist), comm.size)) # This misses out the mpi load balancing but probably ok (?)
+        my_subshapes = [None] * len(my_inds_2)
+        my_subwcses = [None] * len(my_inds_2)
+        my_ra_ref = [[0, 0]] * len(my_inds_2)
+        del obslist
 
     for idx,oi in enumerate(my_inds_2):
         pid, detset, band = obskeys[oi]
@@ -1010,6 +1024,10 @@ def main(config_file=None, defaults=defaults, **args):
                 for split_label in split_labels:
                     tags.append( (obslist[0][0], obs_infos[obslist[0][3]].telescope, band, detset, int(t), split_label, '', cwd+'/'+prefix+'_%s'%split_label, obs_infos[obslist[0][3]].el_center, obs_infos[obslist[0][3]].az_center, my_ra_ref_atomic[0][0], my_ra_ref_atomic[0][1], 0.0) )
 
+        if maps_done:
+            print("map exists; continuing")
+            continue # We want to add the tags but not do the maps
+
         if not args['only_hits']:
             try:
                 # 5. make the maps
@@ -1024,7 +1042,10 @@ def main(config_file=None, defaults=defaults, **args):
             mapdata = write_hits_map(context, obslist, subshape, subwcs, nside, nside_tile, t0=t, comm=comm_intra, tag=tag, verbose=args['verbose'],)
             if comm_intra.rank == 0:
                 oname = "%s_%s.%s" % (prefix, "full_hits", 'fits')
-                enmap.write_map(oname, mapdata.hits)
+                if nside is None:
+                    enmap.write_map(oname, mapdata.hits)
+                else:
+                    hp.write_map(oname, (mapdata.hits).view(args['dtype_map']), nest=True)
     comm.Barrier()
     # gather the tags for writing into the sqlite database
     tags_total = comm.gather(tags, root=0)
