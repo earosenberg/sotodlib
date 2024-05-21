@@ -1007,8 +1007,8 @@ def main(config_file=None, defaults=defaults, **args):
         utils.mkdir(os.path.dirname(prefix))
         meta_done = os.path.isfile(prefix + "_full_info.hdf")
         maps_done = os.path.isfile(prefix + ".empty") or (
-            os.path.isfile(prefix + "_full_map.fits") and
-            os.path.isfile(prefix + "_full_ivar.fits") and
+            os.path.isfile(prefix + "_full_wmap.fits") and
+            os.path.isfile(prefix + "_full_weights.fits") and
             os.path.isfile(prefix + "_full_hits.fits")
         )
         L.info("%s Proc period %4d dset %s:%s @%.0f dur %5.2f h with %2d obs" % (tag, pid, detset, band, t, (periods[pid,1]-periods[pid,0])/3600, len(obslist)))
