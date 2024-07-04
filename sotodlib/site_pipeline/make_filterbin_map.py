@@ -16,6 +16,7 @@ from types import SimpleNamespace
 #from tqdm import tqdm
 from . import util
 
+import healpy as hp
 defaults = {"query": "1",
             "area": None,
             "nside": None,
@@ -48,6 +49,7 @@ defaults = {"query": "1",
             "fixed_time": None,
             "mindur": None,
             "ext": "fits",
+            "context_basic": None,
            }
 
 def get_parser(parser=None):
@@ -57,6 +59,7 @@ def get_parser(parser=None):
                      help="Path to mapmaker config.yaml file")
 
     parser.add_argument("--context", help='context file')
+    parser.add_argument("--context_basic", help='context file')
     parser.add_argument("--query", help='query, can be a file (list of obs_id) or selection string')
     parser.add_argument("--area", help='wcs geometry')
     parser.add_argument("--nside", type=int, help='healpix nside')
@@ -866,9 +869,12 @@ def main(config_file=None, defaults=defaults, **args):
     L.addHandler(ch)
 
     context = Context(args['context'])
+    # This is done to minimize the metadata loaded when making obslists and eliminate slow and annoying "trimming" step when there is mismatch in the dbs
+    context_basic = Context(args['context_basic']) if (args['context_basic'] is not None) else context # This breaks the automatic wafer_slot loading; have to explicitly give wafer numbers in config
+
     # obslists is a dict, obskeys is a list, periods is an array, only rank 0 will do this and broadcast to others.
     if comm.rank==0:
-        obslists, obskeys, periods, obs_infos = mapmaking.build_obslists(context, args['query'], mode=args['mode'], nset=args['nset'], wafer=args['wafer'], freq=args['freq'], ntod=args['ntod'], tods=args['tods'], fixed_time=args['fixed_time'], mindur=args['mindur'])
+        obslists, obskeys, periods, obs_infos = mapmaking.build_obslists(context_basic, args['query'], mode=args['mode'], nset=args['nset'], wafer=args['wafer'], freq=args['freq'], ntod=args['ntod'], tods=args['tods'], fixed_time=args['fixed_time'], mindur=args['mindur'])
         L.info('Done with build_obslists')
     else:
         obslists = None ; obskeys = None; periods=None ; obs_infos = None
@@ -977,8 +983,8 @@ def main(config_file=None, defaults=defaults, **args):
         utils.mkdir(os.path.dirname(prefix))
         meta_done = os.path.isfile(prefix + "_full_info.hdf")
         maps_done = os.path.isfile(prefix + ".empty") or (
-            os.path.isfile(prefix + "_full_map.fits") and
-            os.path.isfile(prefix + "_full_ivar.fits") and
+            os.path.isfile(prefix + "_full_wmap.fits") and
+            os.path.isfile(prefix + "_full_weights.fits") and
             os.path.isfile(prefix + "_full_hits.fits")
         )
         L.info("%s Proc period %4d dset %s:%s @%.0f dur %5.2f h with %2d obs" % (tag, pid, detset, band, t, (periods[pid,1]-periods[pid,0])/3600, len(obslist)))
@@ -1022,6 +1028,7 @@ def main(config_file=None, defaults=defaults, **args):
                                  RA_ref_stop=my_ra_ref_atomic[0][1],
                                  pwv=0.0
                                 ))
+
         if not args['only_hits']:
             try:
                 # 5. make the maps
@@ -1041,7 +1048,6 @@ def main(config_file=None, defaults=defaults, **args):
                 if nside is None:
                     enmap.write_map(oname, mapdata.hits)
                 else:
-                    import healpy as hp
                     hp.write_map(oname, (mapdata.hits).view(args['dtype_map']), nest=True)
     if comm.rank == 0:
         print("Done")
