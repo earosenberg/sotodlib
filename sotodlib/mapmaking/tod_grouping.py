@@ -113,7 +113,9 @@ def build_period_obslists(obs_info, periods, context, nset=None, wafer=None, fre
         else:
             #meta = context.get_meta(row.obs_id)
             #wafer_list = np.unique(meta.det_info.wafer_slot)
-            wafer_list = ['ws0', 'ws1', 'ws2', 'ws3', 'ws4', 'ws5', 'ws6']
+            all_wafers = np.array(['ws0', 'ws1', 'ws2', 'ws3', 'ws4', 'ws5', 'ws6'])
+            wafers = np.array(list(row.obs_id[-7:]))
+            wafer_list = all_wafers[wafers == '1']
         if freq is not None:
             band_list = [freq]
         else:

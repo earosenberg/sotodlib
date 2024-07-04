@@ -175,25 +175,28 @@ def find_footprint(context, tods, ref_wcs, comm=mpi.COMM_WORLD, return_pixboxes=
     if return_pixboxes: return shape, wcs, pixboxes
     else: return shape, wcs
 
-def ptp_cuts(aman, signal_name='dsT', kurtosis_threshold=5):
-    while True:
-        if aman.dets.count > 0:
-            ptps = np.ptp(aman[signal_name], axis=1)
-        else:
-            break
-        kurtosis_ptp = kurtosis(ptps)
-        if kurtosis_ptp < kurtosis_threshold:
-            print(f'dets:{aman.dets.count}, ptp_kurt: {kurtosis_ptp:.1f}')
-            break
-        else:
-            max_is_bad_factor = np.max(ptps)/np.median(ptps)
-            min_is_bad_factor = np.median(ptps)/np.min(ptps)
-            if max_is_bad_factor > min_is_bad_factor:
-                aman.restrict('dets', aman.dets.vals[ptps < np.max(ptps)])
-            else:
-                aman.restrict('dets', aman.dets.vals[ptps > np.min(ptps)])
-            print(f'dets:{aman.dets.count}, ptp_kurt: {kurtosis_ptp:.1f}')
-    print(f'dets: {aman.dets.count}')
+def ptp_cuts(obs, signal_name='dsT'): #, kurtosis_threshold=5):
+    # Find the typical noise level in the filtered tod, ignoring glitches
+    bsize  = 100
+    rms  = np.percentile(utils.block_reduce(obs.signal, bsize,
+                                            inclusive=False, op=np.var),
+                         10, -1)**0.5
+    typical = np.median(rms)
+    # Take away dets with extreme noise
+    rmstol = 10
+    good = (rms>typical/rmstol)&(rms<typical*rmstol)
+    obs.restrict("dets", obs.dets.vals[good])
+    rms = rms[good]
+    # Build cuts, based on maximum allowed fraction of data values
+    # above the threshold.
+    cuttol = 1000
+    maxcut = 0.05
+    cutmask = np.abs(obs.signal)>rms[:,None]*cuttol
+    cutfrac = np.mean(cutmask,1)
+    good = cutfrac <= maxcut
+    print("all dets: ", obs.dets.count)
+    print("good: ", good.shape)
+    obs.restrict("dets", obs.dets.vals[good])
 
 def calibrate_obs_with_preprocessing(obs, dtype_tod=np.float32, site='so_sat1', det_left_right=False, det_in_out=False, det_upper_lower=False):
     obs.wrap("weather", np.full(1, "toco"))
@@ -832,7 +835,6 @@ def main(config_file=None, defaults=defaults, **args):
             raise KeyError("{} is a required argument. Please supply it in a config file or via the command line".format(req))
     args = cfg
     warnings.simplefilter('ignore')
-
     # Set up our communicators
     comm       = mpi.COMM_WORLD
     comm_intra = comm.Split(comm.rank // 1) # this is a dummy intra communicator we don't need since we will do atomic maps here
@@ -893,7 +895,6 @@ def main(config_file=None, defaults=defaults, **args):
         split_labels.append('scan_left');split_labels.append('scan_right')
     if not split_labels:
         split_labels = None
-
     # we open the data base for checking if we have maps already, if we do we will not run them again.
     if os.path.isfile('./'+args['atomic_db']) and not args['only_hits']:
         conn = sqlite3.connect('./'+args['atomic_db']) # open the connector, in reading mode only
@@ -987,6 +988,9 @@ def main(config_file=None, defaults=defaults, **args):
             os.path.isfile(prefix + "_full_weights.fits") and
             os.path.isfile(prefix + "_full_hits.fits")
         )
+        if maps_done and meta_done:
+            print("done, continuing")
+            continue
         L.info("%s Proc period %4d dset %s:%s @%.0f dur %5.2f h with %2d obs" % (tag, pid, detset, band, t, (periods[pid,1]-periods[pid,0])/3600, len(obslist)))
 
         my_ra_ref_atomic = [my_ra_ref[idx]]
@@ -1039,7 +1043,7 @@ def main(config_file=None, defaults=defaults, **args):
                     write_depth1_info(prefix, info, split_labels=split_labels )
             except DataMissing as e:
                 # This will happen if we decide to abort a map while we are doing the preprocessing.
-                #handle_empty(prefix, tag, comm_intra, e, L)
+                handle_empty(prefix, tag, comm_intra, e, L)
                 continue
         else:
             mapdata = write_hits_map(context, obslist, subshape, subwcs, nside, nside_tile, t0=t, comm=comm_intra, tag=tag, verbose=args['verbose'],)
