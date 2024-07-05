@@ -823,11 +823,13 @@ def main(config_file=None, defaults=defaults, **args):
     # Update the default dict with values provided from a config.yaml file
     if config_file is not None:
         cfg_from_file = _get_config(config_file)
+        cfg_file_keys = [k for k, v in cfg_from_file.items() if v is not None]
         cfg.update({k: v for k, v in cfg_from_file.items() if v is not None})
     else:
+        cfg_file_keys = []
         print("No config file provided, assuming default values")
     # Merge flags from config file and defaults with any passed through CLI
-    cfg.update({k: v for k, v in args.items() if v is not None})
+    cfg.update({k: v for k, v in args.items() if (v is not None) and (k not in cfg_file_keys)}) ## cfg_file takes precedence
     # Certain fields are required. Check if they are all supplied here
     required_fields = ['context','area']
     for req in required_fields:
@@ -982,11 +984,15 @@ def main(config_file=None, defaults=defaults, **args):
 
         tag     = "%5d/%d" % (oi+1, len(obskeys))
         utils.mkdir(os.path.dirname(prefix))
-        meta_done = os.path.isfile(prefix + "_full_info.hdf")
+        if split_labels is None:
+            tt = 'full'
+        else:
+            tt = split_labels[-1]
+        meta_done = os.path.isfile(prefix + f"_{tt}_info.hdf")
         maps_done = os.path.isfile(prefix + ".empty") or (
-            os.path.isfile(prefix + "_full_wmap.fits") and
-            os.path.isfile(prefix + "_full_weights.fits") and
-            os.path.isfile(prefix + "_full_hits.fits")
+            os.path.isfile(prefix + f"_{tt}_wmap.fits") and
+            os.path.isfile(prefix + f"_{tt}_weights.fits") and
+            os.path.isfile(prefix + f"_{tt}_hits.fits")
         )
         if maps_done and meta_done:
             print("done, continuing")
