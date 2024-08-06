@@ -1,7 +1,7 @@
 import argparse
 import numpy as np, sys, time, warnings, os, so3g, logging, yaml, sqlite3, itertools
 from sotodlib import coords, mapmaking
-from sotodlib.core import Context,  metadata as metadata_core, FlagManager
+from sotodlib.core import Context,  metadata as metadata_core, FlagManager, AxisManager, OffsetAxis
 from sotodlib.core.flagman import has_any_cuts, has_all_cut
 from sotodlib.io import metadata
 from sotodlib.tod_ops import flags, jumps, gapfill, filters, detrend_tod, apodize, pca, fft_ops, sub_polyf
@@ -12,6 +12,7 @@ from pixell import enmap, utils, fft, bunch, wcsutils, tilemap, colors, memory, 
 from scipy import ndimage, interpolate
 from scipy.optimize import curve_fit
 from scipy.stats import kurtosis, skew
+from scipy.signal import welch
 from types import SimpleNamespace
 #from tqdm import tqdm
 from . import util
@@ -50,6 +51,7 @@ defaults = {"query": "1",
             "mindur": None,
             "ext": "fits",
             "context_basic": None,
+            "calc_hpf_params": False,
            }
 
 def get_parser(parser=None):
@@ -95,6 +97,7 @@ def get_parser(parser=None):
     parser.add_argument("--dtype_tod",  )
     parser.add_argument("--dtype_map",  )
     parser.add_argument("--atomic_db", help='name of the atomic map database, will be saved where make_filterbin_map is being run')
+    parser.add_argument("--calc_hpf_params", action="store_true")
     return parser
 
 def _get_config(config_file):
@@ -197,6 +200,62 @@ def ptp_cuts(obs, signal_name='dsT'): #, kurtosis_threshold=5):
     print("all dets: ", obs.dets.count)
     print("good: ", good.shape)
     obs.restrict("dets", obs.dets.vals[good])
+
+def get_psd(obs):
+    dt = obs.timestamps - obs.timestamps[0]
+    freq, Pxx_demodQ = welch(obs.demodQ, fs=1/np.mean(np.diff(dt)), nperseg=10*60*1/np.mean(np.diff(dt)))
+    _, Pxx_demodU = welch(obs.demodQ, fs=1/np.mean(np.diff(dt)), nperseg=10*60*1/np.mean(np.diff(dt)))
+    obs.merge( AxisManager(OffsetAxis("nusamps", len(freq))))
+    obs.wrap("freqs", freq, [(0,"nusamps")])
+    obs.wrap('Pxx_demodQ', Pxx_demodQ, [(0, 'dets'), (1, 'nusamps')])
+    obs.wrap('Pxx_demodU', Pxx_demodU, [(0, 'dets'), (1, 'nusamps')])
+    return
+
+def high_pass_correct(obs, get_params_from_data):
+    obs.move('hwpss_model', None)
+    obs.move('hwpss_remove', None)
+    #obs.move('gap_filled', None)
+
+    if get_params_from_data:
+        # wrap psd
+        get_psd(obs)
+
+        # Fit for fknee and alpha from data
+        mask_valid_freqs = (1e-4<obs.freqs) & (obs.freqs < 1.9)
+        x = obs.freqs[mask_valid_freqs]
+        obs.wrap_new('sigma', ('dets', ))
+        obs.wrap_new('fk', ('dets', ))
+        obs.wrap_new('alpha', ('dets', ))
+        for di, det in enumerate(obs.dets.vals):
+            y = obs.Pxx_demodQ[di, mask_valid_freqs]
+            alpha_guess = -1.
+            fk_guess = 0.01
+            popt, pcov = curve_fit(log_fit_func, x, np.log(y),
+                                   p0=(np.sqrt(np.median(y[x>0.2])),
+                                       fk_guess, alpha_guess),
+                                   maxfev=100000)
+            obs.sigma[di] = popt[0]
+            obs.fk[di] = popt[1]
+            obs.alpha[di] = popt[2]
+        fknee = np.median(obs.fk)
+        alpha = -1*np.median(obs.alpha)
+        sigma_fknee = (np.percentile(obs.fk,84) - np.percentile(obs.fk, 16))/2
+        sigma_alpha = (np.percentile(obs.alpha,84) - np.percentile(obs.alpha, 16))/2
+        print(f"fknee_{obs.obs_info.obs_id}_{fknee}_{sigma_fknee}")
+        print(f"alpha_{obs.obs_info.obs_id}_{alpha}_{sigma_alpha}")
+    else:
+        fknee = 0.1
+        alpha = 2
+
+    # High-pass filter
+    hpf = filters.counter_1_over_f(fknee, alpha)
+    hpf_Q = filters.fourier_filter(obs, hpf, signal_name='demodQ')
+    hpf_U = filters.fourier_filter(obs, hpf, signal_name='demodU')
+
+    obs.demodQ = hpf_Q
+    obs.demodU = hpf_U
+
+    return obs
 
 def calibrate_obs_with_preprocessing(obs, dtype_tod=np.float32, site='so_sat1', det_left_right=False, det_in_out=False, det_upper_lower=False):
     obs.wrap("weather", np.full(1, "toco"))
@@ -305,7 +364,7 @@ def calibrate_obs_with_preprocessing(obs, dtype_tod=np.float32, site='so_sat1', 
         obs.restrict('dets', obs.dets.vals[~mask_det])
     return obs
 
-def calibrate_obs_otf(obs, dtype_tod=np.float32, site='so_sat1'):
+def calibrate_obs_otf(obs, dtype_tod=np.float32, site='so_sat1', calc_hpf_params=False):
     obs.wrap("weather", np.full(1, "toco"))
     obs.wrap("site",    np.full(1, site))
     # Restrict non optical detectors, which have nans in their focal plane coordinates and will crash the mapmaking operation.
@@ -338,8 +397,13 @@ def calibrate_obs_otf(obs, dtype_tod=np.float32, site='so_sat1'):
         detrend_tod(obs, method='median', signal_name='hwpss_remove')
         # peak to peak
         ptp_cuts(obs, signal_name='signal')
-        obs.signal = np.multiply(obs.signal.T, obs.det_cal.phase_to_pW * obs.abscal.abscal_factor ).T
-        obs.hwpss_remove = np.multiply(obs.hwpss_remove.T, obs.det_cal.phase_to_pW * obs.abscal.abscal_factor).T
+        if 'abscal' in obs.keys():
+            abscal_factor = obs.abscal.abscal_factor
+        else:
+            abscal_factor=1
+            print(f"No abscal available for {obs.obs_info.obs_id}, {list(np.unique(obs.det_info.wafer_slot))}, {list(np.unique(obs.det_info.wafer.bandpass))}")
+        obs.signal = np.multiply(obs.signal.T, obs.det_cal.phase_to_pW * abscal_factor ).T
+        obs.hwpss_remove = np.multiply(obs.hwpss_remove.T, obs.det_cal.phase_to_pW * abscal_factor).T
         #LPF and PCA
         filt = filters.low_pass_sine2(1, width=0.1)
         sigfilt = filters.fourier_filter(obs, filt, signal_name='hwpss_remove')
@@ -388,15 +452,16 @@ def calibrate_obs_otf(obs, dtype_tod=np.float32, site='so_sat1'):
             coeffsU[di] = c[0]
         obs.demodQ -= np.multiply(obs.T_lpf.T, coeffsQ).T
         obs.demodU -= np.multiply(obs.T_lpf.T, coeffsU).T
-        obs.move('hwpss_model', None)
-        obs.move('hwpss_remove', None)
         obs.move('gap_filled', None)
         obs.move('lpf_hwpss_remove', None)
-        hpf = filters.counter_1_over_f(0.1, 2)
-        hpf_Q = filters.fourier_filter(obs, hpf, signal_name='demodQ')
-        hpf_U = filters.fourier_filter(obs, hpf, signal_name='demodU')
-        obs.demodQ = hpf_Q
-        obs.demodU = hpf_U
+        high_pass_correct(obs, calc_hpf_params)
+        # obs.move('hwpss_model', None)
+        # obs.move('hwpss_remove', None)
+        # hpf = filters.counter_1_over_f(0.1, 2)
+        # hpf_Q = filters.fourier_filter(obs, hpf, signal_name='demodQ')
+        # hpf_U = filters.fourier_filter(obs, hpf, signal_name='demodU')
+        # obs.demodQ = hpf_Q
+        # obs.demodU = hpf_U
         # cut detectors
         ivar = 1.0/np.var(obs.demodQ, axis=-1)
         sigma = (np.percentile(ivar,84) - np.percentile(ivar, 16))/2
@@ -687,7 +752,7 @@ def write_hits_map(context, obslist, shape=None, wcs=None, nside=None, nside_til
             hits = mapmaking.untile_healpix(obs_hits)
     return bunch.Bunch(hits=hits)
 
-def make_depth1_map(context, obslist, noise_model, shape=None, wcs=None, nside=None, nside_tile='auto', comps="TQU", t0=0, dtype_tod=np.float32, dtype_map=np.float64, comm=mpi.COMM_WORLD, tag="", verbose=0, preprocess_config=None, split_labels=None, singlestream=False, det_weights=None, det_in_out=False, det_left_right=False, det_upper_lower=False, site='so_sat1', recenter=None, ext='fits'):
+def make_depth1_map(context, obslist, noise_model, shape=None, wcs=None, nside=None, nside_tile='auto', comps="TQU", t0=0, dtype_tod=np.float32, dtype_map=np.float64, comm=mpi.COMM_WORLD, tag="", verbose=0, preprocess_config=None, split_labels=None, singlestream=False, det_weights=None, det_in_out=False, det_left_right=False, det_upper_lower=False, site='so_sat1', recenter=None, ext='fits', calc_hpf_params=False):
     L = logging.getLogger(__name__)
     pre = "" if tag is None else tag + " "
     if comm.rank == 0: L.info(pre + "Initializing equation system")
@@ -725,8 +790,8 @@ def make_depth1_map(context, obslist, noise_model, shape=None, wcs=None, nside=N
         except ValueError:
             continue # this is to skip the "hwp rotation direction is ambiguous" error
         if obs.dets.count <= 1: continue
-        #obs = calibrate_obs_with_preprocessing(obs, dtype_tod=dtype_tod, det_in_out=det_in_out, det_left_right=det_left_right, det_upper_lower=det_upper_lower, site=site)        
-        obs = calibrate_obs_otf(obs, dtype_tod=dtype_tod, site=site)
+        #obs = calibrate_obs_with_preprocessing(obs, dtype_tod=dtype_tod, det_in_out=det_in_out, det_left_right=det_left_right, det_upper_lower=det_upper_lower, site=site)
+        obs = calibrate_obs_otf(obs, dtype_tod=dtype_tod, site=site, calc_hpf_params=calc_hpf_params)
         if obs.dets.count <= 1: continue
 
         splits.det_splits_relative(obs, det_left_right=det_left_right, det_upper_lower=det_upper_lower, det_in_out=det_in_out, wrap=True)
@@ -1042,12 +1107,12 @@ def main(config_file=None, defaults=defaults, **args):
         if not args['only_hits']:
             try:
                 # 5. make the maps
-                mapdata = make_depth1_map(context, obslist, noise_model, subshape, subwcs, nside, nside_tile, t0=t, comm=comm_intra, tag=tag, preprocess_config=args['preprocess_config'], recenter=recenter, dtype_map=args['dtype_map'], dtype_tod=args['dtype_tod'], comps=args['comps'], verbose=args['verbose'], split_labels=split_labels, singlestream=args['singlestream'], det_in_out=args['det_in_out'], det_left_right=args['det_left_right'], det_upper_lower=args['det_upper_lower'], site=args['site'], ext=args['ext'])
+                mapdata = make_depth1_map(context, obslist, noise_model, subshape, subwcs, nside, nside_tile, t0=t, comm=comm_intra, tag=tag, preprocess_config=args['preprocess_config'], recenter=recenter, dtype_map=args['dtype_map'], dtype_tod=args['dtype_tod'], comps=args['comps'], verbose=args['verbose'], split_labels=split_labels, singlestream=args['singlestream'], det_in_out=args['det_in_out'], det_left_right=args['det_left_right'], det_upper_lower=args['det_upper_lower'], site=args['site'], ext=args['ext'], calc_hpf_params=args['calc_hpf_params'])
                 # 6. write them
                 if comm_intra.rank == 0:
                     write_depth1_map(prefix, mapdata, split_labels=split_labels, )
                     write_depth1_info(prefix, info, split_labels=split_labels )
-            except DataMissing as e:
+            except Exception as e:
                 # This will happen if we decide to abort a map while we are doing the preprocessing.
                 handle_empty(prefix, tag, comm_intra, e, L)
                 continue
